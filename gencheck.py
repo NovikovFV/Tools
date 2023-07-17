@@ -11,196 +11,200 @@
 #Необязательные параметры:
 #where_table_1 - Фильтр для table_1                                   Пример: where_table_1 = '''cast(\'2021-02-16\' as date) between start_dt and end_dt and ctl_action <> \'D\''''
 #where_table_2 - Фильтр для table_2                                   Пример: where_table_2 = '''ctl_action <> \'D\''''
+
+import re
+
+def tab(string, spases=4):
+	return string.replace('\n', '\n' + (' '*spases))
+
+def selwhere(table = '', where = '1=1'):
+	return f'select *\nfrom {table}\nwhere {where}\n'
+
+def gencntcheck(**kw):
+    str_pk = tab('\n,'.join(kw['clean_key']), 2)
+    or_pk = ' is null\n or '.join(kw['clean_key']) + ' is null'
+    return f"""CREATE TABLE {kw['table_cntcheck']} STORED AS PARQUET AS
+select
+  'count' as check_name
+  ,'{kw['table_1']}' as table_name
+  ,count(*) as cnt
+from {kw['table_1']}
+where {kw['where_table_1']}
+union all
+select
+  'count' as check_name
+  ,'{kw['table_2']}' as table_name
+  ,count(*) as cnt
+from {kw['table_2']}
+where {kw['where_table_2']}
+
+union all
+
+select
+  'null_pk' as check_name
+  ,'{kw['table_1']}' as table_name
+  ,count(*) as cnt
+from {kw['table_1']}
+where {kw['where_table_1']}
+and ({or_pk})
+union all
+select
+  'null_pk' as check_name
+  ,'{kw['table_2']}' as table_name
+  ,count(*) as cnt
+from {kw['table_2']}
+where {kw['where_table_2']}
+and ({or_pk})
+
+union all
+
+select
+  'doubles_pk' as check_name
+  ,'{kw['table_1']}' as table_name
+  ,count(*) as cnt
+from (
+select
+  {str_pk}
+  ,count(*) as count_doubles
+from {kw['table_1']}
+where {kw['where_table_1']}
+group by\n  {str_pk}
+having count(*) > 1
+) as table_1
+union all
+select
+  'doubles_pk' as check_name
+  ,'{kw['table_2']}' as table_name
+  ,count(*) as cnt
+from (
+select
+  {str_pk}
+  ,count(*) as count_doubles
+from {kw['table_2']}
+where {kw['where_table_2']}
+group by\n  {str_pk}
+having count(*) > 1
+) as table_2\n
+"""
+
+def gendiffcheck(**kw):
+    str_atr = 'table_.' + '\n,table_.'.join(kw['clean_attributes'])
+
+    cmp_diff = f"""select
+  '{kw['table_1']}' as table_name
+  ,{tab(str_atr.replace('_.', '_1.'), 2)}
+from {kw['table_1']} as table_1
+where {kw['where_table_1']}
+
+union all
+
+select
+  '{kw['table_2']}' as table_name
+  ,{tab(str_atr.replace('_.', '_2.'), 2)}
+from {kw['table_2']} as table_2
+where {kw['where_table_2']}"""
+
+    return f"""CREATE TABLE {kw['test_base']}.gck_{kw['self_mark']}_diffrows STORED AS PARQUET AS
+with
+un as (
+{cmp_diff}
+)
+select
+  table_name
+  ,{tab(str_atr, 2)}
+from
+  (select
+    table_name
+    ,{tab(str_atr, 4)}
+    ,count(*) over(partition by {', '.join(kw['clean_attributes'])}) as cnt
+  from un
+  ) as prep
+where cnt <> 2
+order by {', '.join(kw['clean_key'])}
+"""
+
+def gencntatrcheck(**kw):
+    tmp = []
+    for attr in kw['clean_attributes']:
+        tmp.append(f'sum (if (table_1.{attr} <=> table_2.{attr}, 0, 1)) as {attr}')
+    cmp_atr = '\n,'.join(tmp)
+
+    tmp = []
+    for pk in kw['clean_key']:
+        tmp.append(f'and table_1.{pk} = table_2.{pk}')
+    join_pk = '\n'.join(tmp)
+
+    return f"""
+select
+  {tab(cmp_atr, 2)}
+from
+  ({tab(selwhere(table = kw['table_1'], where = kw['where_table_1']), 2)}) as table_1
+full outer join
+  ({tab(selwhere(table = kw['table_2'], where = kw['where_table_2']), 2)}) as table_2
+  on 1=1
+  {tab(join_pk, 2)}"""
+
 def gencheck(table_1 = '/*base*/./*table_1*/', table_2 = '/*base*/./*table_2*/', key = '/*key*/', attributes = '/*attributes*/', where_table_1 = '1=1', where_table_2 = '1=1', test_base = 'DEFAULT', self_mark = 'default'):
-                start_query = 'spark.sql("""\n'
-                end_query = '""").show()\n\n'
+    table_cntcheck  = f'{test_base}.gck_{self_mark}_countcheck'
+    table_diffcheck = f'{test_base}.gck_{self_mark}_diffrows'
 
-                attributes = attributes.replace('\n', '')
-                key =  key.replace('\n', '')
-                where_table_1 = where_table_1.replace('\n', '\n  ') #!!! where atr_1 = '\n'
-                where_table_2 = where_table_2.replace('\n', '\n  ') #!!! where atr_1 = '\n'
-                #self_mark without \s
-                tmp = ''
-                requests = []
+    reg = re.compile('[^a-zA-Z0-9_,.]')
+    clean_attributes = (reg.sub('', attributes)).split(',')
+    clean_key = (reg.sub('', key)).split(',')
+    #self_mark without \s
+    tmp = ''
+    requests = []
 
-                or_pk = ''
-                for pk in key.split(','):
-                               or_pk = or_pk + '  or ' + pk.strip() + ' is null\n'
+    requests.append('/*-----------------------------------/TABLES/-----------------------------------*/\n')
 
-                or_not_atr = ''
-                for atr in attributes.split(','):
-                               or_not_atr = or_not_atr + '  or not table_1.' + atr.strip() + ' <=> table_2.' + atr.strip() + '\n'
+    requests.append(f'DROP TABLE IF EXISTS {table_cntcheck}\n')
 
-                join_pk = ''
-                for pk_attr in key.split(','):
-                               join_pk = join_pk + '  and ' + 'table_1.'+ pk_attr.strip() + ' = ' + 'table_2.' + pk_attr.strip() + '\n'
+    requests.append(gencntcheck(
+    	table_1 = table_1,
+        table_2 = table_2,
+        clean_key = clean_key,
+        where_table_1 = where_table_1,
+        where_table_2 = where_table_2,
+        table_cntcheck = table_cntcheck))
 
-                str_pk = ''
-                for pk in key.split(','):
-                               str_pk = str_pk + '  ' +  pk.strip() + ',\n'
-                str_pk = str_pk.rstrip(',\n')
+    requests.append(f'DROP TABLE IF EXISTS {test_base}.gck_{self_mark}_diffrows\n')
 
-                str_atr_1 = ''
-                for atr in attributes.split(','):
-                               str_atr_1 = str_atr_1 + '  table_1.' + atr.strip() + ',\n'
-                str_atr_1 = str_atr_1.rstrip(',\n')
+    requests.append(gendiffcheck(
+    	table_1 = table_1,
+        table_2 = table_2,
+        where_table_1 = where_table_1,
+        where_table_2 = where_table_2,
+    	test_base = test_base,
+        self_mark = self_mark,
+        clean_attributes = clean_attributes,
+        clean_key = clean_key))
 
-                str_atr_2 = ''
-                for atr in attributes.split(','):
-                               str_atr_2 = str_atr_2 + '  table_2.' + atr.strip() + ',\n'
-                str_atr_2 = str_atr_2.rstrip(',\n')
+    requests.append('/*-----------------------------------/QUERIES/-----------------------------------*/\n')
 
-                cmp_atr = ''
-                for attr in attributes.split(','):
-                               cmp_atr = cmp_atr + '  sum (if (table_1.' + attr.strip() + ' <=> table_2.' + attr.strip() + ', 0, 1)) as ' + attr.strip() + ',\n'
-                cmp_atr = cmp_atr.rstrip(',\n') + '\n'
+    requests.append(f'select * from {table_cntcheck} order by check_name, table_name\n')
 
-                cmp_diff = (
-                  'select\n'
-                + '  \'' + table_1 + '\'' + ' as NAME,\n'
-                + str_atr_1 + '\n'
-                + 'from ' + table_1 + ' as table_1' + '\n'
-                + 'where ' + where_table_1 + '\n'
-                + '\nunion all\n\n'
-                + 'select\n'
-                + '  \'' + table_2 + '\'' + ' as NAME,\n'
-                + str_atr_2 + '\n'
-                + 'from ' + table_2 + ' as table_2' + '\n'
-                + 'where ' + where_table_2 + '\n')
+    requests.append(f'select * from {table_diffcheck} order by {key}, table_name\n')
 
-                requests.append('/*-----------------------------------/TABLES/-----------------------------------*/\n')
+    requests.append(f"""
+select
+ count(*) as CNT_diff_all
+ ,count(case when table_name = '{table_1}' then 1 end) as CNT_diff_table_1
+ ,count(case when table_name = '{table_2}' then 1 end) as CNT_diff_table_2
+from {table_diffcheck}
+""")
 
-                requests.append('spark.sql("""\n' + 'DROP TABLE IF EXISTS ' + test_base + '.gck_' + self_mark + '_countcheck' + '\n' + '""")\n\n')
+    requests.append(gencntatrcheck(
+    	clean_key = clean_key,
+    	clean_attributes = clean_attributes,
+        table_1 = table_1,
+        table_2 = table_2,
+        where_table_1 = where_table_1,
+        where_table_2 = where_table_2))
 
-                requests.append(
-                                 'spark.sql("""\n'
-                               + 'CREATE TABLE ' + test_base + '.gck_' + self_mark + '_countcheck STORED AS PARQUET AS\n'
-                               + 'select\n'
-                               + '  \'count\' as CHECK,\n'
-                               + '  \'' + table_1 + '\'' + ' as NAME,\n'
-                               + '  count(*) as CNT\n'
-                               + 'from ' + table_1 + '\n'
-                               + 'where ' + where_table_1 + '\n'
-                               + '\nunion all\n\n'
-                               + 'select\n'
-                               + '  \'count\' as CHECK,\n'
-                               + '  \'' + table_2 + '\'' + ' as NAME,\n'
-                               + '  count(*) as CNT\n'
-                               + 'from ' + table_2 + '\n'
-                               + 'where ' + where_table_2 + '\n'
-                               + '\nunion all\n\n'
-                               + 'select\n'
-                               + '  \'null_pk\' as CHECK,\n'
-                               + '  \'' + table_1 + '\'' + ' as NAME,\n'
-                               + '  count(*) as CNT\n'
-                               + 'from ' + table_1 + '\n'
-                               + 'where ' + where_table_1 + '\n'
-                               + 'and (1=0\n'
-                               + or_pk
-                               + ')\n'
-                               + '\nunion all\n\n'
-                               + 'select\n'
-                               + '  \'null_pk\' as CHECK,\n'
-                               + '  \'' + table_2 + '\'' + ' as NAME,\n'
-                               + '  count(*) as CNT\n'
-                               + 'from ' + table_2 + '\n'
-                               + 'where ' + where_table_2 + '\n'
-                               + 'and (1=0\n'
-                               + or_pk
-                               + ')\n'
-                               + '\nunion all\n\n'
-                               + 'select\n'
-                               + '  \'doubles_pk\' as CHECK,\n'
-                               + '  \'' + table_1 + '\'' + ' as NAME,\n'
-                               + '  count(*) as CNT\n'
-                               + 'from (\n'
-                               + 'select\n'
-                               + str_pk + ',\n'
-                               + 'count(*) as COUNT_DOUBLES\n'
-                               + 'from ' + table_1 + '\n'
-                               + 'where ' + where_table_1 + '\n'
-                               + 'group by\n'
-                               + str_pk + '\n'
-                               + 'having count(*) > 1\n'
-                               + ') as table_1\n'
-                               + '\nunion all\n\n'
-                               + 'select\n'
-                               + '  \'doubles_pk\' as CHECK,\n'
-                                + '  \'' + table_2 + '\'' + ' as NAME,\n'
-                               + '  count(*) as CNT\n'
-                               + 'from (\n'
-                               + 'select\n'
-                               + str_pk + ',\n'
-                               + 'count(*) as COUNT_DOUBLES\n'
-                               + 'from ' + table_2 + '\n'
-                               + 'where ' + where_table_2 + '\n'
-                               + 'group by\n'
-                               + str_pk + '\n'
-                               + 'having count(*) > 1\n'
-                               + ') as table_2\n'
-                               + '""")\n\n')
-
-                requests.append('spark.sql("""\n' + 'DROP TABLE IF EXISTS ' + test_base + '.gck_' + self_mark + '_diffrows' + '\n' + '""")\n\n')
-
-                requests.append(
-                                 'spark.sql("""\n'
-                               + 'CREATE TABLE ' + test_base + '.gck_' + self_mark + '_diffrows STORED AS PARQUET AS\n'
-                               + 'with\n'
-                               + 'un as (\n'
-                               + cmp_diff
-                               + ')\n\n'
-        + 'select\n'
-        + '  NAME,\n'
-        + ' ' + ',\n  '.join(attributes.split(',')) + '\n'
-        + 'from\n'
-        + '  (select\n'
-        + '    NAME,\n'
-        + '   ' + ',\n    '.join(attributes.split(',')) + ',\n'
-        + '    count(*) over(partition by ' + attributes.strip().replace(',', ', ') + ') as cnt\n'
-        + '  from un\n'
-        + '  ) as prep\n'
-        + 'where cnt <> 2\n'
-        + 'order by ' + str_pk.strip().replace('\n ', '') + '\n'
-        + '""")\n\n')
-
-                requests.append('/*-----------------------------------/QUERIES/-----------------------------------*/\n')
-
-                requests.append(
-                               'spark.sql("""select * from ' + test_base + '.gck_' + self_mark + '_countcheck order by CHECK, NAME' + '""").show(false)\n')
-
-                requests.append(
-                               'spark.sql("""select * from ' + test_base + '.gck_' + self_mark + '_diffrows order by ' + str_pk.strip().replace('\n ', '') + ', NAME""").show(false)\n\n')
-                requests.append(
-                               'spark.sql("""\n'
-                               + 'select \n'
-                               + '  count(*) as CNT_diff_gck_' + self_mark + '_diffrow' + ',\n'
-                               + '  count(case when NAME = \'' + table_1 +'\' then 1 end) as CNT_diff_table_1' + ',\n'
-                               + '  count(case when NAME = \'' + table_2 +'\' then 1 end) as CNT_diff_table_2' + '\n'
-                               + 'from ' + test_base + '.gck_' + self_mark + '_diffrows \n'
-                               + '""").show(false)\n\n')
-
-                requests.append(
-                                 'spark.sql("""\n'
-                               + 'select\n'
-                               + cmp_atr
-                               + 'from\n'
-                               + '  (select *\n'
-                               + '  from ' + table_1 + '\n'
-                               + '  where ' + where_table_1 + '\n'
-                               + '  ) as table_1\n'
-                               + 'full outer join\n'
-                               + '  (select *\n'
-                               + '  from ' + table_2 + '\n'
-                               + '  where ' + where_table_2 + '\n'
-                               + '  ) as table_2\n'
-                               + '  on 1=1\n'
-                               + join_pk
-                               + '""").show(false)\n\n')
-
-                tmp = ''
-                for i in requests:
-                               tmp = tmp + i
-                return tmp
+    tmp = ''
+    for i in requests:
+                   tmp = tmp + i
+    return tmp
 
 def main():
                 print(gencheck(
