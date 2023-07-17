@@ -1,0 +1,108 @@
+#-------------------------------------------------------------hadoop fs-------------------------------------------------------------#
+#Справочник по командам
+hadoop fs -help
+
+#Файлы в дирректории
+hadoop fs -ls hdfs://UAT/data/custom/risk/np/dflt/stg
+
+#Размер дирректории (-h отвечает за преобразование формата размера данных (байт -> ГБ) -s сумирует размер всех файлов в каталоге)
+hadoop fs -du -s -h  hdfs://UAT/data/custom/risk/np/metrics/stg/t_agregat_hist_no_ovr_28022022
+
+#Посмотреть логи
+hdfs dfs -ls /oozie-app/custom/risk/dme/wf_D_HDP_CDM_RISK_KFL_OPT_PLAN/logs
+
+#-------------------------------------------------------------YARN-------------------------------------------------------------#
+#Убить процесс в YARN
+yarn application -kill application_1668347591632_29396
+
+#Поменять очередь
+yarn application -movetoqueue application_1668347591632_29488 -queue root.g_utdc_y_team_masspers_gbc
+
+#Посмотреть список приложений
+yarn application -list |grep novikov
+
+#-------------------------------------------------------------kinit-------------------------------------------------------------#
+#Кейтабы
+cd keytab
+kinit -Vkt u_utdc_s_custom_risk_tsmr_ext.keytab u_utdc_s_custom_risk_tsmr_ext
+kinit -Vkt u_utdc_s_custom_risk_kfl.keytab u_utdc_s_custom_risk_kfl
+kinit -Vkt u_utdc_s_custom_risk_np_dflt.keytab u_utdc_s_custom_risk_np_dflt
+kinit -Vkt u_utdc_s_custom_risk_np_metrics.keytab u_utdc_s_custom_risk_np_metrics
+kinit -Vkt infa.keytab infa
+
+kinit -Vkt u_sklrisk_s_custom_risk_np_metrics.keytab u_sklrisk_s_custom_risk_np_metrics
+
+kinit -V novikov1-fv_ca-sbrf-ru
+
+#Просмотр текущих прав
+klist
+#-------------------------------------------------------------SPARK-------------------------------------------------------------#
+#Чипованый спарк
+spark2-shell --conf spark.sql.hive.convertMetastoreParquet=false  --conf spark.sql.shuffle.partitions=2000 --executor-memory=24g --driver-memory=12G --conf spark.dynamicAllocation.maxExecutors=300  --conf spark.network.timeout=1000s --num-executors 50 --executor-cores 5 --queue root.g_utdc_y_team_blago
+
+spark2-shell --conf spark.yarn.access.hadoopFileSystems=hdfs://clsklod:8020/,hdfs://clsklod7:8020/,hdfs://clsklsmd:8020/ --conf spark.sql.shuffle.partitions=2000 --executor-memory=24g --driver-memory=12G --queue root.g_utdc_y_team_blago
+
+spark2-shell --conf spark.network.timeout=1000s --conf spark.hadoop.hive.exec.dynamic.partition=true --conf spark.hadoop.hive.exec.dynamic.partition.mode=nonstrict
+
+spark2-shell --conf spark.sql.hive.convertMetastoreParquet=false  --conf spark.sql.shuffle.partitions=200 --executor-memory=24g --driver-memory=12G --conf spark.network.timeout=1000s --num-executors 50 --executor-cores 4 --queue root.g_utdc_y_team_blago --conf spark.hadoop.hive.exec.dynamic.partition=true --conf spark.hadoop.hive.exec.dynamic.partition.mode=nonstrict --conf spark.executor.minExecutors=1
+
+
+#Запустить файл в spark-submit
+spark2-submit --master yarn --deploy-mode client test2.py
+spark2-shell -i test.scala
+
+#pyspark2
+pyspark2
+
+#-------------------------------------------------------------HIVE-------------------------------------------------------------#
+#Запустить файл с запросами
+hive -f dflt_stg_ddl_drop.sql -hiveconf hive.exec.dynamic.partition=true -hiveconf hive.exec.dynamic.partition.mode=nonstrict
+
+#Запуск запроса из консоли
+hive -e 'show create table custom_risk_np_dflt_stg.t_dflt_stg_cards_prkey_timeline'
+
+#-------------------------------------------------------------curl-------------------------------------------------------------#
+#Запуск потока
+curl -H "Content-Type:application/json" -X POST -d '{}' http://fada40.cloud.df.sbrf.ru:8888/v1/api/wf/sched/12172
+curl -H "Content-Type:application/json" -X POST -d '{"BUS_DT":"2021-10-25"}' http://fada40.cloud.df.sbrf.ru:8888/v1/api/wf/sched/14477
+
+#Завершение потока
+curl -H "Content-Type:application/json" -X DELETE http://septu5.df.sbrf.ru:8079/v1/api/loading/5415435
+
+#Снятие с реглпмента
+curl -H "Content-Type:application/json" -X DELETE http://septu5.df.sbrf.ru:8079/v1/api/wf/sched/24806
+
+#Посмотреть параметры потока (-o/-O скачать с новым именем/оригинальным)
+curl -H "Content-Type:application/json" -X GET -d '{}' http://fada40.cloud.df.sbrf.ru:8888/v1/api/wf/12435
+curl -X GET -o wf24313.json http://septu5.df.sbrf.ru:8079/v1/api/wf/24313
+
+#Изменить параметры потока
+curl -H "Content-Type:application/json" -X PUT -d '{"wf_event_sched":[{"stat_id":12,"profile":"Default","entity_id":907021111,"wf_id":12435,"active":true}],"singleLoading":true, "eventAwaitStrategy":"and", "scheduled":true}' http://septu5.df.sbrf.ru:8079/v1/api/wf/12435
+curl -X PUT -H 'Content-Type:application/json' -d @wf24168.json http://septu5.df.sbrf.ru:8079/v1/api/wf/24168
+
+#Выставить на расписание
+curl -H "Content-Type:application/json" -X PUT -d '{}' http://septu5.df.sbrf.ru:8079/v1/api/wf/sched/24168
+
+#Запуск потока для выставления статистик !!!CDH
+curl -H "Content-Type:application/json" -X POST -d '{}' http://septu5.df.sbrf.ru:8079/v1/api/wf/sched/14754
+
+#Выставление статистик
+curl -H "Content-Type:application/json" -X POST -d '{
+"loading_id":5787082,
+"entity_id":907662027,
+"stat_id":7,
+"avalue":["2020-10-04"]
+}' http://septu5.df.sbrf.ru:8079/v1/api/statval/m
+
+#Завершение потока для статистик
+curl -H "Content-Type:application/json" -X PUT -d '{}' http://septu5.df.sbrf.ru:8079/v1/api/loading/5787082
+
+#-------------------------------------------------------------Linux-------------------------------------------------------------#
+#Посмотреть права
+ls -l
+
+#Поменять владельца файла/каталога. Флаг -R также меняет права всех файлов/каталогов внутри указанного.
+hadoop fs -chown -R u_itdc_s_custom_risk_np_metrics /oozie-app/custom/risk/dme/wf_D_HDP_CDM_RISK_NP_METRICS_CRED_CARD_STG
+
+#
+curl -H "Content-Type:application/json" -X POST -d '{}' http://septu5.df.sbrf.ru:8079/v1/api/
